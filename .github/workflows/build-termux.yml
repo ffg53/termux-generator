@@ -135,6 +135,18 @@ jobs:
       - name: Set --plugin
         if: "${{ github.event.inputs.plugin != '' }}"
         run: echo "PLUGIN=--plugin ${{ github.event.inputs.plugin }}" >> $GITHUB_ENV
+      - name: Disable libxml2 Doxygen documentation to fix LLVM error
+        run: |
+          STEPS_FILE="scripts/termux_generator_steps.sh"
+          
+          if [ -f "$STEPS_FILE" ]; then
+            # Внедряем команду автозамены прямо перед тем, как ваш генератор начнет применять патчи
+            sed -i '/apply_patches/i \  sed -i "s/-Ddocs=enabled/-Ddocs=disabled/g" termux-packages-main/packages/libxml2/build.sh 2>/dev/null || true' "$STEPS_FILE"
+            echo "Successfully injected libxml2 hotfix into $STEPS_FILE"
+          else
+            # Если репозиторий уже склонирован воркфлоу на хосте
+            sed -i 's/-Ddocs=enabled/-Ddocs=disabled/g' termux-packages-main/packages/libxml2/build.sh || true
+          fi
       - name: Build Termux
         run: |
           ./build-termux.sh \
