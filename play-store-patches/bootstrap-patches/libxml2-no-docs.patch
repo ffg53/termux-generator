@@ -1,5 +1,5 @@
---- a/x11-packages/libxml2/build.sh
-+++ b/x11-packages/libxml2/build.sh
+--- x11-packages/libxml2/build.sh
++++ x11-packages/libxml2/build.sh
 @@ -26,6 +26,7 @@ termux_step_configure() {
  	meson setup build \
  		-Dtests=false \
