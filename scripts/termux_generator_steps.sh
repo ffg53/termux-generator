@@ -1,3 +1,6 @@
+#!/bin/bash
+# termux_generator_steps.sh - содержит основные функции сборки
+
 # Funktion, um den Paketnamen zu überprüfen
 check_names() {
     if [[ $TERMUX_APP__PACKAGE_NAME =~ '_' ]] || \
@@ -81,12 +84,10 @@ download() {
     fi
     git clone --depth 1 --recursive https://github.com/termux/termux-x11.git        termux-apps-main/termux-x11
 
-	# Disable libxml2 docs to avoid doxygen LLVM error
-	sed -i '/meson setup build/ s/$/ -Ddocs=disabled/' termux-packages-main/packages/libxml2/build.sh || true
-	# Удаляем Doxyfile, чтобы doxygen не мог быть запущен
-	find termux-packages-main -name "Doxyfile" -delete 2>/dev/null || true
-	#sed -i 's/-Dlzma=disabled/-Dlzma=disabled -Ddocs=disabled/g' termux-packages-main/packages/libxml2/build.sh || true
-    #sed -i 's/-Dlzma=disabled/-Dlzma=disabled -Ddocs=disabled/g' "$TERMUX_PACKAGES_DIR/packages/libxml2/build.sh" || true
+    # Disable libxml2 docs to avoid doxygen LLVM error
+    sed -i '/meson setup build/ s/$/ -Ddocs=disabled/' termux-packages-main/packages/libxml2/build.sh || true
+    # Удаляем Doxyfile, чтобы doxygen не мог быть запущен (дополнительная защита)
+    find termux-packages-main -name "Doxyfile" -delete 2>/dev/null || true
 }
 
 install_plugin() {
@@ -156,7 +157,6 @@ build_termux_x11() {
     popd
 }
 
-
 move_termux_x11_deb() {
     pushd termux-apps-main/termux-x11
 
@@ -211,6 +211,9 @@ build_bootstraps() {
     # https://github.com/termux/termux-packages/blob/650907de80114cc53b20b181161f993e3ad0dfad/scripts/setup-ubuntu.sh#L371
     # needed for building pypy and similar packages
     scripts/run-docker.sh sudo ln -sf "/data/data/$TERMUX_APP__PACKAGE_NAME/aosp" /system
+
+    # ПОДМЕНЯЕМ doxygen на true, чтобы избежать ошибки libLLVM.so.18.1
+    scripts/run-docker.sh bash -c "echo '#!/bin/bash' > /usr/local/bin/doxygen && echo 'exit 0' >> /usr/local/bin/doxygen && chmod +x /usr/local/bin/doxygen"
 
     if [[ "$TERMUX_APP_TYPE" == "f-droid" && "$TERMUX_APP__PACKAGE_NAME" == "com.retired64.termux" && $bootstrap_architectures != *","* ]]; then
         build_all_packages "$bootstrap_architectures"
