@@ -80,6 +80,9 @@ download() {
         git clone --depth 1 https://github.com/termux-play-store/termux-apps.git        termux-apps-main
     fi
     git clone --depth 1 --recursive https://github.com/termux/termux-x11.git        termux-apps-main/termux-x11
+
+	# Disable libxml2 docs to avoid doxygen LLVM error
+    sed -i 's/-Dlzma=disabled/-Dlzma=disabled -Ddocs=disabled/g' "$TERMUX_PACKAGES_DIR/packages/libxml2/build.sh" || true
 }
 
 install_plugin() {
