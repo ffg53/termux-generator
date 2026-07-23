@@ -4,10 +4,13 @@ import os
 import time
 import subprocess
 import sys
+import threading
 
 CONFIG_FILE = "/data/data/com.termux/files/usr/etc/ngircd.conf"
-UDP_PORT = 6668
+UDP_PORT = 6668  # для регистрации
+HELLO_PORT = 6669  # для HELLO-пакетов
 PASSWORD = "meshpass"
+BROADCAST_ADDR = '255.255.255.255'
 
 def restart_ngircd():
     subprocess.run(["pkill", "ngircd"], stderr=subprocess.DEVNULL)
@@ -45,7 +48,6 @@ PeerPassword = {PASSWORD}
     return True
 
 def get_my_server_name():
-    """Читает имя сервера из секции [Global] конфига"""
     try:
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
@@ -77,8 +79,21 @@ def handle_request(data, addr, sock):
     else:
         sock.sendto(b"ERROR", addr)
 
+def send_hello():
+    """Функция для периодической рассылки HELLO-пакетов"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    name = get_my_server_name() or "unknown.local"
+    msg = f"HELLO name={name}".encode()
+    while True:
+        try:
+            sock.sendto(msg, (BROADCAST_ADDR, HELLO_PORT))
+            print(f"[{time.ctime()}] Sent HELLO from {name}")
+        except Exception as e:
+            print(f"HELLO send error: {e}")
+        time.sleep(5)  # каждые 5 секунд
+
 def main():
-    # Создаём базовый конфиг, если отсутствует
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'w') as f:
             f.write("""[Global]
@@ -88,10 +103,20 @@ AdminInfo2 = Android
 AdminEmail = admin@mesh
 Listen = 0.0.0.0
 Ports = 6667
+Compression = no
+
+[Options]
+PAM = no
 """)
         restart_ngircd()
 
+    # Запускаем поток для HELLO-рассылки
+    hello_thread = threading.Thread(target=send_hello, daemon=True)
+    hello_thread.start()
+
+    # Основной UDP-сервер для регистрации
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('0.0.0.0', UDP_PORT))
     print(f"[{time.ctime()}] UDP server listening on port {UDP_PORT}")
     while True:

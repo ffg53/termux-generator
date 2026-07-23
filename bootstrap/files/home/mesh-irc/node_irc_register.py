@@ -4,29 +4,36 @@ import subprocess
 import time
 import os
 import sys
+import threading
 
 CONFIG_FILE = "/data/data/com.termux/files/usr/etc/ngircd.conf"
-UDP_PORT = 6668
+UDP_PORT = 6668  # для регистрации
+HELLO_PORT = 6669  # для HELLO-пакетов
 PASSWORD = "meshpass"
-
-def get_gateway_ip():
-    try:
-        route = subprocess.check_output(["netstat", "-rn"], text=True)
-        for line in route.splitlines():
-            if line.startswith("0.0.0.0"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    return parts[1]
-    except Exception:
-        pass
-    return None
+BROADCAST_ADDR = '255.255.255.255'
 
 def get_my_name():
+    # Используем сохранённое имя из ID-файла или генерируем
+    id_file = "/data/data/com.termux/files/home/.mesh_id"
+    if os.path.exists(id_file):
+        with open(id_file, 'r') as f:
+            name = f.read().strip()
+            if name:
+                return name
+    # fallback
     try:
-        mac = subprocess.check_output(["cat", "/sys/class/net/wlan0/address"], text=True).strip().replace(":", "")
-        return f"node-{mac[-6:]}.local"
+        mac = subprocess.check_output(["cat", "/sys/class/net/wlan0/address"], 
+                                      text=True, stderr=subprocess.DEVNULL).strip().replace(":", "")
+        if mac:
+            name = f"node-{mac[-6:]}.local"
+        else:
+            raise Exception("no mac")
     except:
-        return f"node-{int(time.time())%10000}.local"
+        name = f"node-{int(time.time())%10000}.local"
+    # Сохраняем
+    with open(id_file, 'w') as f:
+        f.write(name)
+    return name
 
 def send_udp(msg, ip, port=UDP_PORT):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -39,7 +46,6 @@ def send_udp(msg, ip, port=UDP_PORT):
         return None
 
 def update_my_name_in_config(my_name):
-    """Обновляет имя сервера в секции [Global]"""
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'w') as f:
             f.write(f"""[Global]
@@ -49,6 +55,10 @@ AdminInfo2 = Android Node
 AdminEmail = admin@mesh
 Listen = 0.0.0.0
 Ports = 6667
+Compression = no
+
+[Options]
+PAM = no
 """)
         return
 
@@ -73,17 +83,38 @@ Ports = 6667
         new_lines.append(line)
 
     if not name_found:
-        # Вставляем Name сразу после [Global]
         for i, line in enumerate(new_lines):
             if line.strip() == '[Global]':
                 new_lines.insert(i+1, f'Name = {my_name}\n')
                 break
 
+    # Убедимся, что Compression = no есть
+    compression_found = any(line.strip().startswith('Compression') for line in new_lines)
+    if not compression_found:
+        for i, line in enumerate(new_lines):
+            if line.strip() == '[Global]':
+                new_lines.insert(i+2, 'Compression = no\n')
+                break
+
+    # Убедимся, что PAM = no
+    has_options = any(line.strip().startswith('[Options]') for line in new_lines)
+    if not has_options:
+        for i, line in enumerate(new_lines):
+            if line.strip() == '[Global]':
+                new_lines.insert(i+3, '\n[Options]\nPAM = no\n')
+                break
+    else:
+        pam_found = any(line.strip().startswith('PAM =') for line in new_lines)
+        if not pam_found:
+            for i, line in enumerate(new_lines):
+                if line.strip() == '[Options]':
+                    new_lines.insert(i+1, 'PAM = no\n')
+                    break
+
     with open(CONFIG_FILE, 'w') as f:
         f.writelines(new_lines)
 
 def add_hub_to_config(hub_name, hub_ip):
-    """Добавляет секцию [Server] для хаба"""
     with open(CONFIG_FILE, 'r') as f:
         content = f.read()
     if f"Name = {hub_name}" in content:
@@ -111,30 +142,67 @@ def restart_ngircd():
     subprocess.Popen(["ngircd"])
     print(f"[{time.ctime()}] Restarted ngircd")
 
-def main():
-    gateway = get_gateway_ip()
-    if not gateway:
-        print("No gateway found")
-        sys.exit(1)
-    my_name = get_my_name()
-    print(f"My name: {my_name}")
-    reply = send_udp("GET_HUB_NAME", gateway)
-    if not reply:
-        print("No response from hub")
-        sys.exit(0)
-    hub_name = reply.strip()
-    print(f"Hub name: {hub_name}")
-    reply = send_udp(f"REG {my_name}", gateway)
-    if reply != "OK":
-        print("Registration failed")
-        sys.exit(1)
-    print("Registration successful")
+def is_ngircd_running():
+    try:
+        subprocess.check_output(["pgrep", "ngircd"], stderr=subprocess.DEVNULL)
+        return True
+    except:
+        return False
 
-    # Обновляем своё имя в конфиге
+def listen_for_hello():
+    """Слушает HELLO-пакеты и регистрируется при обнаружении нового хаба"""
+    my_name = get_my_name()
     update_my_name_in_config(my_name)
-    # Добавляем хаб как сервер
-    if add_hub_to_config(hub_name, gateway):
-        restart_ngircd()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('0.0.0.0', HELLO_PORT))
+    print(f"[{time.ctime()}] Listening for HELLO on port {HELLO_PORT}")
+
+    while True:
+        try:
+            data, addr = sock.recvfrom(1024)
+            msg = data.decode().strip()
+            if not msg.startswith("HELLO"):
+                continue
+            # Извлекаем имя
+            parts = msg.split()
+            name = None
+            for part in parts:
+                if part.startswith("name="):
+                    name = part.split("=", 1)[1]
+                    break
+            if not name:
+                continue
+            # Игнорируем себя
+            if name == my_name:
+                continue
+            hub_ip = addr[0]
+            print(f"[{time.ctime()}] Found hub: {name} at {hub_ip}")
+            # Регистрируемся
+            reply = send_udp(f"REG {my_name}", hub_ip)
+            if reply == "OK":
+                print(f"[{time.ctime()}] Registration successful with {name}")
+                # Добавляем в конфиг и перезапускаем ngircd
+                if add_hub_to_config(name, hub_ip):
+                    restart_ngircd()
+                else:
+                    # Если уже есть, просто убедимся, что ngircd работает
+                    if not is_ngircd_running():
+                        subprocess.Popen(["ngircd"])
+            else:
+                print(f"[{time.ctime()}] Registration failed with {name}")
+        except Exception as e:
+            print(f"Error in listen_for_hello: {e}")
+
+def main():
+    # Запускаем прослушивание HELLO в отдельном потоке
+    listener_thread = threading.Thread(target=listen_for_hello, daemon=True)
+    listener_thread.start()
+
+    # Основной поток будет ждать (или можно сделать бесконечный цикл)
+    while True:
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
