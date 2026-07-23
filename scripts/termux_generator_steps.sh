@@ -83,6 +83,8 @@ download() {
 
 	# Disable libxml2 docs to avoid doxygen LLVM error
 	sed -i '/meson setup build/ s/$/ -Ddocs=disabled/' termux-packages-main/packages/libxml2/build.sh || true
+	# Удаляем Doxyfile, чтобы doxygen не мог быть запущен
+	find termux-packages-main -name "Doxyfile" -delete 2>/dev/null || true
 	#sed -i 's/-Dlzma=disabled/-Dlzma=disabled -Ddocs=disabled/g' termux-packages-main/packages/libxml2/build.sh || true
     #sed -i 's/-Dlzma=disabled/-Dlzma=disabled -Ddocs=disabled/g' "$TERMUX_PACKAGES_DIR/packages/libxml2/build.sh" || true
 }
